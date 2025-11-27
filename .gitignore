@@ -1,0 +1,186 @@
+# Foundry
+cache/
+out/
+broadcast/
+deployments/
+artifacts/
+
+# Dependencies
+lib/
+!lib/morpho-blue/
+node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# Next.js build output
+.next
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+public
+
+# Storybook build outputs
+.out
+.storybook-out
+
+# Temporary folders
+tmp/
+temp/
+
+# Solidity specific
+*.abi
+*.bin
+*.bin-runtime
+
+# Hardhat
+artifacts/
+cache/
+typechain/
+typechain-types/
+
+# Truffle
+build/
+contracts/build/
+
+# Slither
+.slither/
+
+# Mythril
+.mythril/
+
+# Security tools
+.semgrep/
+
+# Gas reports
+gas-report.txt
+
+# Test results
+test-results/
+coverage.json
+
+# Documentation build
+docs/build/
+
+# Local development
+.local/
+local/
+
+# Backup files
+*.backup
+*.bak
+*.tmp
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# Lock files (keep package-lock.json but ignore others)
+yarn.lock
+pnpm-lock.yaml
+
+# Foundry specific
+forge-cache/
+forge-out/
+
+# Anvil
+.anvil/
+
+# Forge test results
+test-results/
+
+# Gas snapshots
+.gas-snapshot
+
+# Coverage reports
+coverage/
+
+# Slither reports
+slither-report.txt
+
+# Mythril reports
+mythril-report.txt
+
+# Echidna reports
+echidna-report.txt
+
+# Certora reports
+certora-reports/
+
+# Formal verification
+*.smt2
+*.z3
+
+# Custom build artifacts
+build/
+dist/
