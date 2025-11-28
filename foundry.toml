@@ -15,4 +15,8 @@ remappings = [
     "morpho-blue/=lib/morpho-blue/",
 ]
 
+[profile.ci]
+# CI profile inherits from default but ensures auto_detect_solc works
+auto_detect_solc = true
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
