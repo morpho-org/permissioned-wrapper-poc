@@ -3,7 +3,8 @@ pragma solidity ^0.8.19;
 
 import {Test, console} from "forge-std/Test.sol";
 import {PermissionedERC20} from "../src/PermissionedERC20.sol";
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
+import {ERC20Mock} from "morpho-blue/src/mocks/ERC20Mock.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract PermissionedERC20Test is Test {
     ERC20Mock public underlyingERC20;
@@ -22,17 +23,17 @@ contract PermissionedERC20Test is Test {
         underlyingERC20 = new ERC20Mock();
 
         // Deploy PermissionedERC20
-        permissionedERC20 = new PermissionedERC20(underlyingERC20);
+        permissionedERC20 = new PermissionedERC20(IERC20(address(underlyingERC20)));
 
         // Add users to allow list
         permissionedERC20.addToAllowList(allowedUser1);
         permissionedERC20.addToAllowList(allowedUser2);
 
         // Mint underlying tokens to users
-        underlyingERC20.mint(allowedUser1, INITIAL_BALANCE);
-        underlyingERC20.mint(allowedUser2, INITIAL_BALANCE);
-        underlyingERC20.mint(notAllowedUser1, INITIAL_BALANCE);
-        underlyingERC20.mint(notAllowedUser2, INITIAL_BALANCE);
+        underlyingERC20.setBalance(allowedUser1, INITIAL_BALANCE);
+        underlyingERC20.setBalance(allowedUser2, INITIAL_BALANCE);
+        underlyingERC20.setBalance(notAllowedUser1, INITIAL_BALANCE);
+        underlyingERC20.setBalance(notAllowedUser2, INITIAL_BALANCE);
     }
 
     /**

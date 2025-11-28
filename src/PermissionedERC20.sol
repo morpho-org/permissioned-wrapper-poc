@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity >=0.8.19;
 
 import {ERC20Wrapper} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Wrapper.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -38,7 +38,7 @@ contract PermissionedERC20 is ERC20, ERC20Wrapper {
     /**
      * @dev Override the _beforeTokenTransfer function to check mint, burn and transfer permissions
      */
-    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual override {
+    function _update(address from, address to, uint256 amount) internal virtual override {
         // Check from address (skip for minting where from is address(0))
         if (from != address(0) && !isAllowed(from)) {
             revert FromAddressNotAllowed(from);
@@ -47,7 +47,7 @@ contract PermissionedERC20 is ERC20, ERC20Wrapper {
         if (to != address(0) && !isAllowed(to)) {
             revert ToAddressNotAllowed(to);
         }
-        super._beforeTokenTransfer(from, to, amount);
+        super._update(from, to, amount);
     }
     ///---------------END OF GATING FUNCTIONS---------------
 }
