@@ -21,6 +21,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
 
       - name: Initialize and update submodules
         run: |
