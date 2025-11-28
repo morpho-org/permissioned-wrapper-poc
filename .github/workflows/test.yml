@@ -27,21 +27,25 @@ jobs:
         run: |
           git submodule update --init --recursive
           cd lib/morpho-blue
-          # Check if .gitmodules exists and has openzeppelin-contracts
-          if grep -q "openzeppelin-contracts" .gitmodules 2>/dev/null; then
-            echo "Found openzeppelin-contracts in .gitmodules, initializing..."
-            git submodule update --init --recursive lib/openzeppelin-contracts
-          else
-            echo "openzeppelin-contracts not in .gitmodules at this commit"
-          fi
           git submodule update --init --recursive --force
-          ls -la lib/ || echo "lib directory not found"
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
       - name: Show Forge version
         run: forge --version
+
+      - name: Install missing dependencies
+        run: |
+          # Install openzeppelin-contracts if missing (morpho-blue commit may not have it)
+          if [ ! -d "lib/morpho-blue/lib/openzeppelin-contracts" ]; then
+            echo "openzeppelin-contracts missing, installing via forge..."
+            forge install OpenZeppelin/openzeppelin-contracts --no-commit
+            # Move to expected location
+            if [ -d "lib/openzeppelin-contracts" ]; then
+              mv lib/openzeppelin-contracts lib/morpho-blue/lib/openzeppelin-contracts
+            fi
+          fi
 
       - name: Run Forge fmt
         run: forge fmt --check
