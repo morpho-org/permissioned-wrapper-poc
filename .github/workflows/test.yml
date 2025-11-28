@@ -27,6 +27,13 @@ jobs:
         run: |
           git submodule update --init --recursive
           cd lib/morpho-blue
+          # Check if .gitmodules exists and has openzeppelin-contracts
+          if grep -q "openzeppelin-contracts" .gitmodules 2>/dev/null; then
+            echo "Found openzeppelin-contracts in .gitmodules, initializing..."
+            git submodule update --init --recursive lib/openzeppelin-contracts
+          else
+            echo "openzeppelin-contracts not in .gitmodules at this commit"
+          fi
           git submodule update --init --recursive --force
           ls -la lib/ || echo "lib directory not found"
 
