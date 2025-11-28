@@ -46,6 +46,11 @@ jobs:
               mv lib/openzeppelin-contracts lib/morpho-blue/lib/openzeppelin-contracts
             fi
           fi
+          # Install bundler3 if missing
+          if [ ! -d "lib/bundler3" ]; then
+            echo "bundler3 missing, installing via forge..."
+            forge install --no-git morpho-org/bundler3
+          fi
 
       - name: Run Forge fmt
         run: forge fmt --check
