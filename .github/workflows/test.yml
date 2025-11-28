@@ -25,7 +25,9 @@ jobs:
       - name: Initialize and update submodules
         run: |
           git submodule update --init --recursive
-          cd lib/morpho-blue && git submodule update --init --recursive
+          cd lib/morpho-blue
+          git submodule update --init --recursive lib/openzeppelin-contracts || true
+          git submodule update --init --recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
