@@ -17,8 +17,7 @@ remappings = [
 
 [profile.ci]
 # CI profile inherits from default but ensures auto_detect_solc works
-# bundler3 requires =0.8.28, so we need to ensure that version is available
+# auto_detect_solc will automatically use the right Solidity version for each file
 auto_detect_solc = true
-solc_version = "0.8.28"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
