@@ -2,16 +2,18 @@
 pragma solidity ^0.8.19;
 
 import {Test} from "forge-std/Test.sol";
+import {ERC20Mock} from "morpho-blue/src/mocks/ERC20Mock.sol";
 import {PermissionedERC20} from "../src/PermissionedERC20.sol";
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
 import {IMorpho, MarketParams, Id} from "morpho-blue/src/interfaces/IMorpho.sol";
-import {Morpho} from "morpho-blue/src/Morpho.sol";
 import {OracleMock} from "morpho-blue/src/mocks/OracleMock.sol";
 import {IrmMock} from "morpho-blue/src/mocks/IrmMock.sol";
 import {MarketParamsLib} from "morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoLib} from "morpho-blue/src/libraries/periphery/MorphoLib.sol";
+import {Constants} from "./utils/Constants.sol";
+import {MorphoMarketSetup} from "./utils/MorphoMarketSetup.sol";
+import {TokenSetup} from "./utils/TokenSetup.sol";
 
-contract SupplyCollateralInMorphoTest is Test {
+contract SupplyCollateralInMorphoDirect is Test {
     using MarketParamsLib for MarketParams;
     using MorphoLib for IMorpho;
 
@@ -23,76 +25,57 @@ contract SupplyCollateralInMorphoTest is Test {
     MarketParams public marketParams;
     Id public marketId;
 
-    address public allowedUser1 = address(0x1001);
-    address public allowedUser2 = address(0x1002);
-    address public notAllowedUser1 = address(0x2001);
-    address public owner = address(0x9999);
+    address public constant allowedUser1 = Constants.ALLOWED_USER_1;
+    address public constant allowedUser2 = Constants.ALLOWED_USER_2;
+    address public constant notAllowedUser1 = Constants.NOT_ALLOWED_USER_1;
+    address public constant owner = Constants.OWNER;
 
-    uint256 public constant INITIAL_BALANCE = 1000 ether;
-    uint256 public constant TEST_AMOUNT = 100 ether;
-    uint256 public constant ORACLE_PRICE_SCALE = 1e36;
+    uint256 public constant INITIAL_BALANCE = Constants.INITIAL_BALANCE;
+    uint256 public constant TEST_AMOUNT = Constants.TEST_AMOUNT;
 
     function setUp() public {
-        // Deploy underlying ERC20 (collateral token)
-        underlyingERC20 = new ERC20Mock();
+        // Deploy tokens
+        TokenSetup.Tokens memory tokens = TokenSetup.deployTokens();
+        underlyingERC20 = tokens.underlying;
+        permissionedERC20 = tokens.permissioned;
 
-        // Deploy PermissionedERC20 (loan token)
-        permissionedERC20 = new PermissionedERC20(underlyingERC20);
+        // Setup Morpho market
+        MorphoMarketSetup.MorphoMarket memory market = MorphoMarketSetup.deployMarketContracts(owner);
 
-        // Deploy Morpho
-        morpho = IMorpho(address(new Morpho(owner)));
-
-        // Deploy Oracle and IRM mocks
-        oracle = new OracleMock();
-        oracle.setPrice(ORACLE_PRICE_SCALE); // 1:1 price ratio
-
-        irm = new IrmMock();
-
-        // Setup Morpho (enable IRM and LLTV)
+        // Configure Morpho (enable IRM and LLTV)
         vm.startPrank(owner);
-        morpho.enableIrm(address(0));
-        morpho.enableIrm(address(irm));
-        morpho.enableLltv(0);
-        morpho.enableLltv(8600); // 86% LLTV
+        MorphoMarketSetup.configureMorpho(market, owner);
         vm.stopPrank();
-
-        // Create market params
-        marketParams = MarketParams({
-            loanToken: address(permissionedERC20),
-            collateralToken: address(underlyingERC20),
-            oracle: address(oracle),
-            irm: address(irm),
-            lltv: 8600 // 86% in basis points
-        });
 
         // Create market
-        morpho.createMarket(marketParams);
-        marketId = marketParams.id();
+        MorphoMarketSetup.createMarket(market, address(permissionedERC20), address(underlyingERC20));
 
-        // Add Morpho to allow list so it can handle the permissioned token
-        permissionedERC20.addToAllowList(address(morpho));
+        morpho = market.morpho;
+        oracle = market.oracle;
+        irm = market.irm;
+        marketParams = market.marketParams;
+        marketId = market.marketId;
 
-        // Add users to allow list
-        permissionedERC20.addToAllowList(allowedUser1);
-        permissionedERC20.addToAllowList(allowedUser2);
+        // Add contracts and users to allow list
+        address[] memory allowListAddresses = new address[](3);
+        allowListAddresses[0] = address(morpho);
+        allowListAddresses[1] = allowedUser1;
+        allowListAddresses[2] = allowedUser2;
+        TokenSetup.addToAllowList(permissionedERC20, allowListAddresses);
 
-        // Mint underlying tokens (collateral) to users
-        underlyingERC20.mint(allowedUser1, INITIAL_BALANCE);
-        underlyingERC20.mint(allowedUser2, INITIAL_BALANCE);
-        underlyingERC20.mint(notAllowedUser1, INITIAL_BALANCE);
+        // Mint tokens to users
+        address[] memory users = new address[](3);
+        users[0] = allowedUser1;
+        users[1] = allowedUser2;
+        users[2] = notAllowedUser1;
+        TokenSetup.mintToUsers(underlyingERC20, users, INITIAL_BALANCE);
 
         // Approve Morpho to spend collateral tokens
-        vm.startPrank(allowedUser1);
-        underlyingERC20.approve(address(morpho), type(uint256).max);
-        vm.stopPrank();
-
-        vm.startPrank(allowedUser2);
-        underlyingERC20.approve(address(morpho), type(uint256).max);
-        vm.stopPrank();
-
-        vm.startPrank(notAllowedUser1);
-        underlyingERC20.approve(address(morpho), type(uint256).max);
-        vm.stopPrank();
+        for (uint256 i = 0; i < users.length; i++) {
+            vm.startPrank(users[i]);
+            TokenSetup.approveForUser(address(underlyingERC20), address(morpho), type(uint256).max);
+            vm.stopPrank();
+        }
     }
 
     /**
@@ -188,3 +171,4 @@ contract SupplyCollateralInMorphoTest is Test {
         assertEq(morpho.collateral(marketId, allowedUser2), TEST_AMOUNT * 2);
     }
 }
+

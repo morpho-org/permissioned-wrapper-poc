@@ -8,6 +8,7 @@ artifacts/
 # Dependencies
 lib/
 !lib/morpho-blue/
+!lib/openzeppelin-contracts/
 node_modules/
 
 # Environment variables

@@ -4,11 +4,24 @@ out = "out"
 libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
-via_ir = false
+via_ir = true
 verbosity = 2
+evm_version = "cancun"
+auto_detect_solc = true
 
 remappings = [
-    "@openzeppelin/contracts/=lib/morpho-blue/lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "bundler3/=lib/bundler3/",
+    "morpho-blue/=lib/morpho-blue/",
 ]
+
+[profile.ci]
+# CI profile: use auto_detect_solc after patching morpho-blue
+# After patching morpho-blue to use ^0.8.19, auto_detect_solc will resolve to 0.8.28
+# which satisfies all dependencies:
+# - bundler3 requires =0.8.28
+# - morpho-blue requires ^0.8.19 (0.8.28 satisfies this after patch)
+# - bundler3's openzeppelin requires ^0.8.20 (0.8.28 satisfies this)
+auto_detect_solc = true
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

@@ -74,11 +74,53 @@ function _beforeTokenTransfer(address from, address to, uint256 amount) internal
 
 When using the permissioned wrapper with Morpho, you must add the Morpho protocol contract to the allow list (and the Morpho Bundler if used). This is required because Morpho needs to receive or send the permissioned tokens when users supply or withdraw collateral.
 
-**Location**: [`test/SupplyCollateralInMorpho.sol`](test/SupplyCollateralInMorpho.sol#L72-L73)
+### Direct Supply
+
+For direct supply operations, you only need to add the Morpho protocol contract to the allow list.
+
+**Location**: [`test/SupplyCollateralInMorphoDirect.t.sol`](test/SupplyCollateralInMorphoDirect.t.sol#L50-L55)
 
 ```solidity
 // Add Morpho to allow list so it can handle the permissioned token
 permissionedERC20.addToAllowList(address(morpho));
+
+// Add users to allow list
+permissionedERC20.addToAllowList(allowedUser1);
+permissionedERC20.addToAllowList(allowedUser2);
+```
+
+Users can then directly call Morpho's `supplyCollateral` function:
+
+```solidity
+morpho.supplyCollateral(marketParams, amount, onBehalf, hex"");
+```
+
+### Supply with Bundler
+
+When using Morpho Bundler3 for atomic operations (e.g., approve + supply collateral), you need to add both the Morpho protocol contract and the Bundler3 contracts to the allow list.
+
+**Location**: [`test/SupplyCollateralInMorphoBundler.t.sol`](test/SupplyCollateralInMorphoBundler.t.sol#L75-L82)
+
+```solidity
+// Add contracts to allow list
+permissionedERC20.addToAllowList(address(morpho));
+permissionedERC20.addToAllowList(address(bundler3));
+permissionedERC20.addToAllowList(address(generalAdapter1));
+
+// Add users to allow list
+permissionedERC20.addToAllowList(allowedUser1);
+permissionedERC20.addToAllowList(allowedUser2);
+```
+
+Users can then execute atomic operations through Bundler3:
+
+```solidity
+Call[] memory bundle = new Call[](3);
+bundle[0] = BundlerHelpers.createApproveCall(token, adapter, amount);
+bundle[1] = BundlerHelpers.createERC20TransferFromCall(adapter, token, adapter, amount);
+bundle[2] = BundlerHelpers.createMorphoSupplyCollateralCall(adapter, marketParams, amount, user, hex"");
+
+bundler3.multicall(bundle);
 ```
 
 
