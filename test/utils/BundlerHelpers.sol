@@ -37,7 +37,6 @@ library BundlerHelpers {
         return Call({to: to, data: data, value: 0, skipRevert: false, callbackHash: callbackHash});
     }
 
-
     /**
      * @notice Creates a Call struct for ERC20 transfer
      * @param adapter The CoreAdapter contract address
@@ -73,11 +72,7 @@ library BundlerHelpers {
         bytes32 callbackHash = data.length == 0 ? bytes32(0) : keccak256(data);
         // Use function selector 0x238d6579 for supplyCollateral(MarketParams,uint256,address,bytes)
         return createCallWithCallback(
-            morpho,
-            abi.encodeWithSelector(
-                bytes4(0x238d6579), marketParams, assets, onBehalf, data
-            ),
-            callbackHash
+            morpho, abi.encodeWithSelector(bytes4(0x238d6579), marketParams, assets, onBehalf, data), callbackHash
         );
     }
 
@@ -141,9 +136,8 @@ library BundlerHelpers {
         pure
         returns (Call memory call)
     {
-        return createCall(
-            adapter, abi.encodeCall(ERC20WrapperAdapter.erc20WrapperWithdrawTo, (wrapper, receiver, amount))
-        );
+        return
+            createCall(adapter, abi.encodeCall(ERC20WrapperAdapter.erc20WrapperWithdrawTo, (wrapper, receiver, amount)));
     }
 }
 

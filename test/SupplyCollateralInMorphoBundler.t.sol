@@ -162,9 +162,7 @@ contract SupplyCollateralInMorphoBundler is Test {
             )
         );
         // Step 5: Approve Morpho to spend permissioned tokens from Bundler3
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(permissionedERC20), address(morpho), TEST_AMOUNT)
-        );
+        bundle.push(BundlerHelpers.createApproveCall(address(permissionedERC20), address(morpho), TEST_AMOUNT));
         // Step 6: Supply collateral to Morpho (Morpho will pull from Bundler3, which now has tokens via adapter)
         bundle.push(
             BundlerHelpers.createMorphoSupplyCollateralCall(
@@ -182,9 +180,7 @@ contract SupplyCollateralInMorphoBundler is Test {
             "Permissioned tokens should be supplied to Morpho"
         );
         assertEq(
-            morpho.collateral(marketId, allowedUser1),
-            collateralBefore + TEST_AMOUNT,
-            "Collateral should increase"
+            morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT, "Collateral should increase"
         );
     }
 
@@ -266,9 +262,7 @@ contract SupplyCollateralInMorphoBundler is Test {
 
         // Verify collateral was supplied
         assertEq(
-            morpho.collateral(marketId, allowedUser1),
-            collateralBefore + TEST_AMOUNT,
-            "Collateral should increase"
+            morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT, "Collateral should increase"
         );
         assertEq(
             permissionedERC20.balanceOf(allowedUser1),
@@ -337,12 +331,14 @@ contract SupplyCollateralInMorphoBundler is Test {
         vm.startPrank(allowedUser1);
         underlyingERC20.approve(address(bundler3), TEST_AMOUNT);
         vm.stopPrank();
-        
+
         // Verify Bundler3 is NOT whitelisted
         assertFalse(permissionedERC20.isAllowed(address(bundler3)), "Bundler3 should NOT be whitelisted");
-        
+
         // Verify ERC20WrapperAdapter IS whitelisted (for wrapping operations)
-        assertTrue(permissionedERC20.isAllowed(address(erc20WrapperAdapter)), "ERC20WrapperAdapter should be whitelisted");
+        assertTrue(
+            permissionedERC20.isAllowed(address(erc20WrapperAdapter)), "ERC20WrapperAdapter should be whitelisted"
+        );
 
         // Wrapping should still work using direct calls (requires approving Bundler3)
         bundle.push(
