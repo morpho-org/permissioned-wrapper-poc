@@ -47,8 +47,9 @@ contract SupplyCollateralInMorphoDirect is Test {
         MorphoMarketSetup.configureMorpho(market, owner);
         vm.stopPrank();
 
-        // Create market
-        MorphoMarketSetup.createMarket(market, address(permissionedERC20), address(underlyingERC20));
+        // Create market with permissioned token as collateral
+        address loanToken = makeAddr("LoanToken");
+        MorphoMarketSetup.createMarket(market, loanToken, address(permissionedERC20));
 
         morpho = market.morpho;
         oracle = market.oracle;
@@ -57,23 +58,25 @@ contract SupplyCollateralInMorphoDirect is Test {
         marketId = market.marketId;
 
         // Add contracts and users to allow list
+        // NOTE: Morpho needs to be whitelisted because it receives permissioned tokens as collateral
         address[] memory allowListAddresses = new address[](3);
         allowListAddresses[0] = address(morpho);
         allowListAddresses[1] = allowedUser1;
         allowListAddresses[2] = allowedUser2;
         TokenSetup.addToAllowList(permissionedERC20, allowListAddresses);
 
-        // Mint tokens to users
-        address[] memory users = new address[](3);
+        // Mint underlying tokens to users and wrap them to get permissioned tokens
+        address[] memory users = new address[](2);
         users[0] = allowedUser1;
         users[1] = allowedUser2;
-        users[2] = notAllowedUser1;
         TokenSetup.mintToUsers(underlyingERC20, users, INITIAL_BALANCE);
 
-        // Approve Morpho to spend collateral tokens
+        // Only whitelisted users can wrap tokens
         for (uint256 i = 0; i < users.length; i++) {
             vm.startPrank(users[i]);
-            TokenSetup.approveForUser(address(underlyingERC20), address(morpho), type(uint256).max);
+            underlyingERC20.approve(address(permissionedERC20), INITIAL_BALANCE);
+            permissionedERC20.depositFor(users[i], INITIAL_BALANCE);
+            permissionedERC20.approve(address(morpho), type(uint256).max);
             vm.stopPrank();
         }
     }
@@ -83,31 +86,36 @@ contract SupplyCollateralInMorphoDirect is Test {
      */
     function test_SupplyCollateralFromAllowedUser_Ok() public {
         uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
-        uint256 balanceBefore = underlyingERC20.balanceOf(allowedUser1);
+        uint256 balanceBefore = permissionedERC20.balanceOf(allowedUser1);
 
         vm.prank(allowedUser1);
         morpho.supplyCollateral(marketParams, TEST_AMOUNT, allowedUser1, hex"");
 
         assertEq(morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(allowedUser1), balanceBefore - TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(address(morpho)), TEST_AMOUNT);
+        assertEq(permissionedERC20.balanceOf(allowedUser1), balanceBefore - TEST_AMOUNT);
+        assertEq(permissionedERC20.balanceOf(address(morpho)), TEST_AMOUNT);
     }
 
     /**
-     * @notice Test: supplyCollateral from a not allowed user => ok (collateral is not permissioned)
+     * @notice Test: supplyCollateral from a not allowed user => ko (user cannot get permissioned tokens)
      */
-    function test_SupplyCollateralFromNotAllowedUser_Ok() public {
-        // Note: supplyCollateral uses the collateral token (underlyingERC20), not the permissioned token
-        // So it should work even if the user is not in the allow list
+    function test_SupplyCollateralFromNotAllowedUser_Ko() public {
+        // Note: notAllowedUser1 cannot wrap underlying tokens because they're not whitelisted
+        // So they cannot get permissioned tokens to supply as collateral
         uint256 collateralBefore = morpho.collateral(marketId, notAllowedUser1);
-        uint256 balanceBefore = underlyingERC20.balanceOf(notAllowedUser1);
 
-        vm.prank(notAllowedUser1);
-        morpho.supplyCollateral(marketParams, TEST_AMOUNT, notAllowedUser1, hex"");
+        // Give notAllowedUser1 underlying tokens
+        underlyingERC20.setBalance(notAllowedUser1, TEST_AMOUNT);
 
-        assertEq(morpho.collateral(marketId, notAllowedUser1), collateralBefore + TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(notAllowedUser1), balanceBefore - TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(address(morpho)), TEST_AMOUNT);
+        vm.startPrank(notAllowedUser1);
+        // Try to wrap tokens - should fail because notAllowedUser1 is not whitelisted
+        underlyingERC20.approve(address(permissionedERC20), TEST_AMOUNT);
+        vm.expectRevert(abi.encodeWithSelector(PermissionedERC20.ToAddressNotAllowed.selector, notAllowedUser1));
+        permissionedERC20.depositFor(notAllowedUser1, TEST_AMOUNT);
+        vm.stopPrank();
+
+        // Verify no collateral was supplied
+        assertEq(morpho.collateral(marketId, notAllowedUser1), collateralBefore);
     }
 
     /**
@@ -115,14 +123,14 @@ contract SupplyCollateralInMorphoDirect is Test {
      */
     function test_SupplyCollateralOnBehalfOfAllowedUser_Ok() public {
         uint256 collateralBefore = morpho.collateral(marketId, allowedUser2);
-        uint256 balanceBefore = underlyingERC20.balanceOf(allowedUser1);
+        uint256 balanceBefore = permissionedERC20.balanceOf(allowedUser1);
 
         vm.prank(allowedUser1);
         morpho.supplyCollateral(marketParams, TEST_AMOUNT, allowedUser2, hex"");
 
         assertEq(morpho.collateral(marketId, allowedUser2), collateralBefore + TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(allowedUser1), balanceBefore - TEST_AMOUNT);
-        assertEq(underlyingERC20.balanceOf(address(morpho)), TEST_AMOUNT);
+        assertEq(permissionedERC20.balanceOf(allowedUser1), balanceBefore - TEST_AMOUNT);
+        assertEq(permissionedERC20.balanceOf(address(morpho)), TEST_AMOUNT);
     }
 
     /**
@@ -153,7 +161,7 @@ contract SupplyCollateralInMorphoDirect is Test {
         vm.stopPrank();
 
         assertEq(morpho.collateral(marketId, allowedUser1), TEST_AMOUNT * 2);
-        assertEq(underlyingERC20.balanceOf(address(morpho)), TEST_AMOUNT * 2);
+        assertEq(permissionedERC20.balanceOf(address(morpho)), TEST_AMOUNT * 2);
     }
 
     /**
