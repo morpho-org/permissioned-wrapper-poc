@@ -72,13 +72,13 @@ function _beforeTokenTransfer(address from, address to, uint256 amount) internal
 
 ## 3. Interacting with Morpho
 
-When using the permissioned wrapper with Morpho, you must add the Morpho protocol contract to the allow list (and the Morpho Bundler if used). This is required because Morpho needs to receive or send the permissioned tokens when users supply or withdraw collateral.
+When using the permissioned wrapper with Morpho, you must add the Morpho protocol contract to the allow list. When using Bundler3, you must also add the adapters (ERC20WrapperAdapter and GeneralAdapter1) to the allow list. **Bundler3 itself does NOT need to be whitelisted** because it never directly interacts with tokens.
 
-### Direct Supply
+### Direct Supply (ie without the Bundler)
 
 For direct supply operations, you only need to add the Morpho protocol contract to the allow list.
 
-**Location**: [`test/SupplyCollateralInMorphoDirect.t.sol`](test/SupplyCollateralInMorphoDirect.t.sol#L50-L55)
+**Location**: [`test/SupplyCollateralInMorphoDirect.t.sol`](test/SupplyCollateralInMorphoDirect.t.sol#L59-L64)
 
 ```solidity
 // Add Morpho to allow list so it can handle the permissioned token
@@ -97,14 +97,16 @@ morpho.supplyCollateral(marketParams, amount, onBehalf, hex"");
 
 ### Supply with Bundler
 
-When using Morpho Bundler3 for atomic operations (e.g., approve + supply collateral), you need to add both the Morpho protocol contract and the Bundler3 contracts to the allow list.
+When using Morpho Bundler3 for atomic operations (e.g., approve + supply collateral), you need to add the Morpho protocol contract and the adapters to the allow list. **Importantly, Bundler3 itself does NOT need to be whitelisted** because it never directly interacts with tokens.
 
-**Location**: [`test/SupplyCollateralInMorphoBundler.t.sol`](test/SupplyCollateralInMorphoBundler.t.sol#L75-L82)
+**Location**: [`test/SupplyCollateralInMorphoBundler.t.sol`](test/SupplyCollateralInMorphoBundler.t.sol#L87-L97)
 
 ```solidity
 // Add contracts to allow list
+// NOTE: Only adapters need to be whitelisted, NOT Bundler3
+// Bundler3 never directly interacts with tokens, so it doesn't need whitelisting
 permissionedERC20.addToAllowList(address(morpho));
-permissionedERC20.addToAllowList(address(bundler3));
+permissionedERC20.addToAllowList(address(erc20WrapperAdapter));
 permissionedERC20.addToAllowList(address(generalAdapter1));
 
 // Add users to allow list
@@ -112,16 +114,56 @@ permissionedERC20.addToAllowList(allowedUser1);
 permissionedERC20.addToAllowList(allowedUser2);
 ```
 
-Users can then execute atomic operations through Bundler3:
+Users can then execute atomic operations through Bundler3. There are two main patterns:
+
+**Pattern 1: Direct supply (using underlying token as collateral)**
 
 ```solidity
-Call[] memory bundle = new Call[](3);
-bundle[0] = BundlerHelpers.createApproveCall(token, adapter, amount);
-bundle[1] = BundlerHelpers.createERC20TransferFromCall(adapter, token, adapter, amount);
-bundle[2] = BundlerHelpers.createMorphoSupplyCollateralCall(adapter, marketParams, amount, user, hex"");
+Call[] memory bundle = new Call[](2);
+// Transfer underlying tokens to adapter
+bundle[0] = BundlerHelpers.createERC20TransferFromCall(
+    generalAdapter1, underlyingToken, generalAdapter1, amount
+);
+// Supply collateral to Morpho
+bundle[1] = BundlerHelpers.createMorphoSupplyCollateralCall(
+    generalAdapter1, marketParams, amount, user, hex""
+);
 
 bundler3.multicall(bundle);
 ```
+
+**Pattern 2: Wrap tokens using ERC20WrapperAdapter**
+
+```solidity
+Call[] memory bundle = new Call[](2);
+// Transfer underlying tokens to ERC20WrapperAdapter
+bundle[0] = BundlerHelpers.createERC20TransferFromCall(
+    generalAdapter1, underlyingToken, erc20WrapperAdapter, amount
+);
+// Wrap tokens (wrapped tokens are sent directly to initiator)
+bundle[1] = BundlerHelpers.createERC20WrapperDepositForCall(
+    erc20WrapperAdapter, permissionedToken, amount
+);
+
+bundler3.multicall(bundle);
+```
+
+**Location**: See [`test/SupplyCollateralInMorphoBundler.t.sol`](test/SupplyCollateralInMorphoBundler.t.sol#L405-L425) for a complete example.
+
+#### Security Considerations
+
+**Important**: The [Bundler3 audit by Spearbit (February 2025)](https://github.com/morpho-org/bundler3/blob/main/audits/2025-02-17-bundler3-update-spearbit.pdf) identified that permissioned wrappers that only check the recipient address could allow non-permissioned users to use the wrapper if they can get tokens through other means.
+
+This implementation mitigates this risk in two ways:
+
+1. **Use of ERC20WrapperAdapter**: We use `ERC20WrapperAdapter` for wrapping operations (instead of using `GeneralAdapter1` for all operations). The `ERC20WrapperAdapter` is specifically designed for ERC20Wrapper operations and sends wrapped tokens directly to the initiator, ensuring proper access control. This adapter is used when wrapping underlying tokens into permissioned tokens.
+
+2. **Both sender and recipient checks**: Our `_beforeTokenTransfer` hook checks **both** the `from` address (sender) and `to` address (recipient). This means:
+   - Non-whitelisted users cannot receive tokens (mint/transfer blocked)
+   - Non-whitelisted users cannot send tokens (transfer blocked)
+   - Even if tokens were somehow obtained, supplying collateral would fail because Morpho's `transferFrom` would check the `from` address
+
+This dual-check approach ensures that only whitelisted addresses can participate in token transfers, providing defense-in-depth against potential bypasses.
 
 
 ---

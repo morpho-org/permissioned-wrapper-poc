@@ -11,6 +11,7 @@ import {MarketParamsLib} from "morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoLib} from "morpho-blue/src/libraries/periphery/MorphoLib.sol";
 import {Bundler3, Call} from "bundler3/src/Bundler3.sol";
 import {GeneralAdapter1} from "bundler3/src/adapters/GeneralAdapter1.sol";
+import {ERC20WrapperAdapter} from "bundler3/src/adapters/ERC20WrapperAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Constants} from "./utils/Constants.sol";
 import {MorphoMarketSetup} from "./utils/MorphoMarketSetup.sol";
@@ -34,6 +35,7 @@ contract SupplyCollateralInMorphoBundler is Test {
     OracleMock public oracle;
     IrmMock public irm;
     Bundler3 public bundler3;
+    ERC20WrapperAdapter public erc20WrapperAdapter;
     GeneralAdapter1 public generalAdapter1;
 
     // Market setup
@@ -76,19 +78,23 @@ contract SupplyCollateralInMorphoBundler is Test {
         marketParams = market.marketParams;
         marketId = market.marketId;
 
-        // Deploy Bundler3 and GeneralAdapter1
+        // Deploy Bundler3, ERC20WrapperAdapter, and GeneralAdapter1
         BundlerSetup.BundlerContracts memory bundlerContracts = BundlerSetup.setupBundler(address(morpho), address(1)); // address(1) as wrapped native
         bundler3 = bundlerContracts.bundler3;
+        erc20WrapperAdapter = bundlerContracts.erc20WrapperAdapter;
         generalAdapter1 = bundlerContracts.generalAdapter1;
 
         // Add contracts and users to allow list
-        address[] memory allowListAddresses = new address[](5);
+        // NOTE: Only the adapter needs to be whitelisted, NOT Bundler3
+        // This is because Bundler3 never directly interacts with tokens
+        address[] memory allowListAddresses = new address[](4);
         allowListAddresses[0] = address(morpho);
-        allowListAddresses[1] = address(bundler3);
+        allowListAddresses[1] = address(erc20WrapperAdapter);
         allowListAddresses[2] = address(generalAdapter1);
         allowListAddresses[3] = allowedUser1;
-        allowListAddresses[4] = allowedUser2;
+        // Note: allowedUser2 will be added separately if needed
         TokenSetup.addToAllowList(permissionedERC20, allowListAddresses);
+        permissionedERC20.addToAllowList(allowedUser2);
 
         // Mint tokens to users
         address[] memory users = new address[](2);
@@ -96,10 +102,11 @@ contract SupplyCollateralInMorphoBundler is Test {
         users[1] = allowedUser2;
         TokenSetup.mintToUsers(underlyingERC20, users, INITIAL_BALANCE);
 
-        // Approve Morpho and adapter to spend tokens, and set authorizations
-        address[] memory spenders = new address[](2);
+        // Approve Morpho and adapters to spend tokens, and set authorizations
+        address[] memory spenders = new address[](3);
         spenders[0] = address(morpho);
-        spenders[1] = address(generalAdapter1);
+        spenders[1] = address(erc20WrapperAdapter);
+        spenders[2] = address(generalAdapter1);
 
         for (uint256 i = 0; i < users.length; i++) {
             vm.startPrank(users[i]);
@@ -387,6 +394,76 @@ contract SupplyCollateralInMorphoBundler is Test {
 
         assertEq(morpho.collateral(marketId, allowedUser1), TEST_AMOUNT, "User1 should have collateral");
         assertEq(morpho.collateral(marketId, allowedUser2), TEST_AMOUNT, "User2 should have collateral");
+    }
+
+    /**
+     * @notice Test: Use ERC20WrapperAdapter to wrap tokens
+     * @dev Demonstrates the hardened approach using ERC20WrapperAdapter
+     * Note: This test shows wrapping, but the market uses underlying as collateral
+     * In a real scenario with permissioned token as collateral, you'd supply the wrapped tokens
+     */
+    function test_UseERC20WrapperAdapter_WrapTokens_Ok() public {
+        // Step 1: Transfer underlying tokens to ERC20WrapperAdapter
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(generalAdapter1), address(underlyingERC20), address(erc20WrapperAdapter), TEST_AMOUNT
+            )
+        );
+        // Step 2: Wrap underlying tokens to permissioned tokens (sent to initiator)
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), TEST_AMOUNT
+            )
+        );
+
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
+
+        vm.prank(allowedUser1);
+        bundler3.multicall(bundle);
+
+        // Verify wrapped tokens were sent to initiator
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore + TEST_AMOUNT,
+            "Initiator should receive wrapped tokens"
+        );
+    }
+
+    /**
+     * @notice Test: Verify that Bundler3 does NOT need to be whitelisted
+     * @dev This test demonstrates that only the adapter needs whitelisting, not Bundler3
+     */
+    function test_Bundler3NotWhitelisted_StillWorks() public {
+        // Remove Bundler3 from whitelist (if it was there)
+        // In our setup, we already don't whitelist Bundler3, so this test verifies it works
+        
+        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
+        
+        // Verify Bundler3 is NOT whitelisted
+        assertFalse(permissionedERC20.isAllowed(address(bundler3)), "Bundler3 should NOT be whitelisted");
+        
+        // Verify adapters ARE whitelisted
+        assertTrue(permissionedERC20.isAllowed(address(erc20WrapperAdapter)), "ERC20WrapperAdapter should be whitelisted");
+        assertTrue(permissionedERC20.isAllowed(address(generalAdapter1)), "GeneralAdapter1 should be whitelisted");
+
+        // Standard flow should still work
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), TEST_AMOUNT
+            )
+        );
+        bundle.push(
+            BundlerHelpers.createMorphoSupplyCollateralCall(
+                address(generalAdapter1), marketParams, TEST_AMOUNT, allowedUser1, hex""
+            )
+        );
+
+        vm.prank(allowedUser1);
+        bundler3.multicall(bundle);
+
+        assertEq(
+            morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT, "Collateral should increase even without Bundler3 whitelisted"
+        );
     }
 }
 

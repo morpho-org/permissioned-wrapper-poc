@@ -3,6 +3,7 @@ pragma solidity >=0.8.19;
 
 import {Call, IBundler3} from "bundler3/src/Bundler3.sol";
 import {GeneralAdapter1} from "bundler3/src/adapters/GeneralAdapter1.sol";
+import {ERC20WrapperAdapter} from "bundler3/src/adapters/ERC20WrapperAdapter.sol";
 import {CoreAdapter} from "bundler3/src/adapters/CoreAdapter.sol";
 import {MarketParams} from "morpho-blue/src/interfaces/IMorpho.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -108,6 +109,39 @@ library BundlerHelpers {
         returns (Call memory call)
     {
         return createCall(token, abi.encodeCall(IERC20(token).approve, (spender, amount)));
+    }
+
+    /**
+     * @notice Creates a Call struct for ERC20Wrapper depositFor
+     * @param adapter The ERC20WrapperAdapter contract address
+     * @param wrapper The wrapper token address
+     * @param amount The amount of underlying tokens to deposit
+     * @return call The Call struct
+     */
+    function createERC20WrapperDepositForCall(address adapter, address wrapper, uint256 amount)
+        internal
+        pure
+        returns (Call memory call)
+    {
+        return createCall(adapter, abi.encodeCall(ERC20WrapperAdapter.erc20WrapperDepositFor, (wrapper, amount)));
+    }
+
+    /**
+     * @notice Creates a Call struct for ERC20Wrapper withdrawTo
+     * @param adapter The ERC20WrapperAdapter contract address
+     * @param wrapper The wrapper token address
+     * @param receiver The address receiving the underlying tokens
+     * @param amount The amount of wrapped tokens to burn
+     * @return call The Call struct
+     */
+    function createERC20WrapperWithdrawToCall(address adapter, address wrapper, address receiver, uint256 amount)
+        internal
+        pure
+        returns (Call memory call)
+    {
+        return createCall(
+            adapter, abi.encodeCall(ERC20WrapperAdapter.erc20WrapperWithdrawTo, (wrapper, receiver, amount))
+        );
     }
 }
 
