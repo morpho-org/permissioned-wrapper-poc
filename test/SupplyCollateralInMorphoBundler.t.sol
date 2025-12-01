@@ -10,7 +10,7 @@ import {IrmMock} from "morpho-blue/src/mocks/IrmMock.sol";
 import {MarketParamsLib} from "morpho-blue/src/libraries/MarketParamsLib.sol";
 import {MorphoLib} from "morpho-blue/src/libraries/periphery/MorphoLib.sol";
 import {Bundler3, Call} from "bundler3/src/Bundler3.sol";
-import {GeneralAdapter1} from "bundler3/src/adapters/GeneralAdapter1.sol";
+import {ERC20WrapperAdapter} from "bundler3/src/adapters/ERC20WrapperAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Constants} from "./utils/Constants.sol";
 import {MorphoMarketSetup} from "./utils/MorphoMarketSetup.sol";
@@ -20,8 +20,9 @@ import {BundlerHelpers} from "./utils/BundlerHelpers.sol";
 
 /**
  * @title SupplyCollateralInMorphoBundler
- * @notice Test suite for supplying collateral to Morpho using Bundler3
- * @dev Tests atomic approve + supply collateral operations through Bundler3
+ * @notice Test suite for wrapping tokens using Bundler3 with ERC20WrapperAdapter
+ * @dev Tests wrapping operations through Bundler3 using only ERC20WrapperAdapter
+ * @dev Note: Supply collateral operations should be done directly (not through Bundler3) after wrapping
  */
 contract SupplyCollateralInMorphoBundler is Test {
     using MarketParamsLib for MarketParams;
@@ -34,7 +35,7 @@ contract SupplyCollateralInMorphoBundler is Test {
     OracleMock public oracle;
     IrmMock public irm;
     Bundler3 public bundler3;
-    GeneralAdapter1 public generalAdapter1;
+    ERC20WrapperAdapter public erc20WrapperAdapter;
 
     // Market setup
     MarketParams public marketParams;
@@ -51,7 +52,6 @@ contract SupplyCollateralInMorphoBundler is Test {
 
     // Bundle storage
     Call[] internal bundle;
-    Call[] internal callbackBundle;
 
     function setUp() public {
         // Deploy tokens
@@ -67,8 +67,9 @@ contract SupplyCollateralInMorphoBundler is Test {
         MorphoMarketSetup.configureMorpho(market, owner);
         vm.stopPrank();
 
-        // Create market
-        MorphoMarketSetup.createMarket(market, address(permissionedERC20), address(underlyingERC20));
+        // Create market with permissioned token as collateral
+        address loanToken = makeAddr("LoanToken");
+        MorphoMarketSetup.createMarket(market, loanToken, address(permissionedERC20));
 
         morpho = market.morpho;
         oracle = market.oracle;
@@ -76,317 +77,290 @@ contract SupplyCollateralInMorphoBundler is Test {
         marketParams = market.marketParams;
         marketId = market.marketId;
 
-        // Deploy Bundler3 and GeneralAdapter1
-        BundlerSetup.BundlerContracts memory bundlerContracts = BundlerSetup.setupBundler(address(morpho), address(1)); // address(1) as wrapped native
+        // Deploy Bundler3 and ERC20WrapperAdapter
+        BundlerSetup.BundlerContracts memory bundlerContracts = BundlerSetup.setupBundler();
         bundler3 = bundlerContracts.bundler3;
-        generalAdapter1 = bundlerContracts.generalAdapter1;
+        erc20WrapperAdapter = bundlerContracts.erc20WrapperAdapter;
 
         // Add contracts and users to allow list
-        address[] memory allowListAddresses = new address[](5);
+        // NOTE: Morpho and ERC20WrapperAdapter need to be whitelisted
+        // - Morpho receives permissioned tokens as collateral
+        // - ERC20WrapperAdapter handles wrapping operations with permissioned tokens
+        // Bundler3 is NOT whitelisted because it never directly interacts with tokens
+        address[] memory allowListAddresses = new address[](3);
         allowListAddresses[0] = address(morpho);
-        allowListAddresses[1] = address(bundler3);
-        allowListAddresses[2] = address(generalAdapter1);
-        allowListAddresses[3] = allowedUser1;
-        allowListAddresses[4] = allowedUser2;
+        allowListAddresses[1] = address(erc20WrapperAdapter);
+        allowListAddresses[2] = allowedUser1;
+        // Note: allowedUser2 will be added separately if needed
         TokenSetup.addToAllowList(permissionedERC20, allowListAddresses);
+        permissionedERC20.addToAllowList(allowedUser2);
 
-        // Mint tokens to users
+        // Mint underlying tokens to users and wrap them to get permissioned tokens
         address[] memory users = new address[](2);
         users[0] = allowedUser1;
         users[1] = allowedUser2;
         TokenSetup.mintToUsers(underlyingERC20, users, INITIAL_BALANCE);
 
-        // Approve Morpho and adapter to spend tokens, and set authorizations
-        address[] memory spenders = new address[](2);
-        spenders[0] = address(morpho);
-        spenders[1] = address(generalAdapter1);
-
+        // Users wrap underlying tokens to get permissioned tokens
         for (uint256 i = 0; i < users.length; i++) {
             vm.startPrank(users[i]);
-            // Approve underlying token
-            for (uint256 j = 0; j < spenders.length; j++) {
-                underlyingERC20.approve(spenders[j], type(uint256).max);
-            }
-            // Approve permissioned token
-            for (uint256 j = 0; j < spenders.length; j++) {
-                permissionedERC20.approve(spenders[j], type(uint256).max);
-            }
-            // Set Morpho authorization for adapter
-            morpho.setAuthorization(address(generalAdapter1), true);
+            underlyingERC20.approve(address(permissionedERC20), INITIAL_BALANCE);
+            permissionedERC20.depositFor(users[i], INITIAL_BALANCE);
+            // Approve Morpho and ERC20WrapperAdapter to spend permissioned tokens
+            permissionedERC20.approve(address(morpho), type(uint256).max);
+            permissionedERC20.approve(address(erc20WrapperAdapter), type(uint256).max);
             vm.stopPrank();
         }
     }
 
-    /* ========== SUPPLY COLLATERAL TESTS ========== */
+    /* ========== WRAPPING TESTS ========== */
 
     /**
-     * @notice Test: Atomic supply collateral through Bundler3
+     * @notice Test: Wrap tokens and supply collateral to Morpho - all atomically through Bundler3
+     * @dev This is the main use case: wrap underlying tokens and supply as collateral in one atomic transaction
+     * @dev Flow: 1) Transfer underlying to adapter, 2) Wrap (tokens go to initiator), 3) Transfer wrapped tokens
+     * @dev from initiator to adapter, 4) Use adapter to transfer to Bundler3, 5) Approve Morpho, 6) Call supplyCollateral
+     * @dev Note: Morpho pulls from msg.sender (Bundler3), so we use adapter to transfer tokens to Bundler3
      */
-    function test_AtomicMorphoSupplyCollateral_Ok() public {
-        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
+    function test_WrapTokensAndSupplyCollateral_Atomic_Ok() public {
+        // Whitelist Bundler3 for this atomic operation (needed because Morpho pulls from msg.sender)
+        permissionedERC20.addToAllowList(address(bundler3));
 
-        // Step 1: Transfer collateral to adapter
+        // First, ensure user has underlying tokens and approves Bundler3 for transferFrom
+        underlyingERC20.setBalance(allowedUser1, TEST_AMOUNT);
+        vm.startPrank(allowedUser1);
+        underlyingERC20.approve(address(bundler3), TEST_AMOUNT);
+        permissionedERC20.approve(address(bundler3), TEST_AMOUNT); // Approve for transfer to adapter
+        permissionedERC20.approve(address(morpho), TEST_AMOUNT); // Approve for Morpho to pull from Bundler3
+        vm.stopPrank();
+
+        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
+
+        // Step 1: Transfer underlying tokens from user to ERC20WrapperAdapter
         bundle.push(
             BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), TEST_AMOUNT
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), TEST_AMOUNT
             )
         );
-        // Step 2: Supply collateral to Morpho
+        // Step 2: Wrap underlying tokens to permissioned tokens (sent to initiator)
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), TEST_AMOUNT
+            )
+        );
+        // Step 3: Transfer permissioned tokens from initiator to ERC20WrapperAdapter (through adapter)
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(permissionedERC20), allowedUser1, address(erc20WrapperAdapter), TEST_AMOUNT
+            )
+        );
+        // Step 4: Use adapter to transfer permissioned tokens from adapter to Bundler3
+        bundle.push(
+            BundlerHelpers.createERC20TransferCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), address(bundler3), TEST_AMOUNT
+            )
+        );
+        // Step 5: Approve Morpho to spend permissioned tokens from Bundler3
+        bundle.push(BundlerHelpers.createApproveCall(address(permissionedERC20), address(morpho), TEST_AMOUNT));
+        // Step 6: Supply collateral to Morpho (Morpho will pull from Bundler3, which now has tokens via adapter)
         bundle.push(
             BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, TEST_AMOUNT, allowedUser1, hex""
+                address(morpho), marketParams, TEST_AMOUNT, allowedUser1, hex""
             )
         );
 
         vm.prank(allowedUser1);
         bundler3.multicall(bundle);
 
+        // Verify wrapped tokens were received and then supplied
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore,
+            "Permissioned tokens should be supplied to Morpho"
+        );
         assertEq(
             morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT, "Collateral should increase"
         );
     }
 
     /**
-     * @notice Test: Atomic approve and supply collateral through Bundler3
+     * @notice Test: Use ERC20WrapperAdapter to wrap tokens
      */
-    function test_AtomicApproveAndSupplyCollateral_Ok() public {
-        uint256 collateralAmount = 100 ether;
-        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
+    function test_UseERC20WrapperAdapter_WrapTokens_Ok() public {
+        // First, ensure user has underlying tokens and approves Bundler3 for transferFrom
+        underlyingERC20.setBalance(allowedUser1, TEST_AMOUNT);
+        vm.startPrank(allowedUser1);
+        underlyingERC20.approve(address(bundler3), TEST_AMOUNT);
+        vm.stopPrank();
 
-        // Step 1: Approve adapter to spend underlying tokens
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), collateralAmount)
-        );
-        // Step 2: Transfer collateral to adapter
+        // Step 1: Transfer underlying tokens from user to ERC20WrapperAdapter (direct call to token)
         bundle.push(
             BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), TEST_AMOUNT
             )
         );
-        // Step 3: Supply collateral to Morpho
+        // Step 2: Wrap underlying tokens to permissioned tokens (sent to initiator)
         bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount, allowedUser1, hex""
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), TEST_AMOUNT
             )
         );
+
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
+
+        vm.prank(allowedUser1);
+        bundler3.multicall(bundle);
+
+        // Verify wrapped tokens were sent to initiator
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore + TEST_AMOUNT,
+            "Initiator should receive wrapped tokens"
+        );
+    }
+
+    /**
+     * @notice Test: Wrap tokens and then supply collateral directly (not through Bundler3)
+     * @dev This demonstrates the complete flow: wrap through Bundler3, then supply directly to Morpho
+     */
+    function test_WrapTokensThenSupplyCollateralDirectly_Ok() public {
+        // First, ensure user has underlying tokens and approves Bundler3 for transferFrom
+        underlyingERC20.setBalance(allowedUser1, TEST_AMOUNT);
+        vm.startPrank(allowedUser1);
+        underlyingERC20.approve(address(bundler3), TEST_AMOUNT);
+        vm.stopPrank();
+
+        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
+
+        // Step 1: Wrap tokens through Bundler3
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), TEST_AMOUNT
+            )
+        );
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), TEST_AMOUNT
+            )
+        );
+
+        vm.prank(allowedUser1);
+        bundler3.multicall(bundle);
+
+        // Verify wrapped tokens were received
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore + TEST_AMOUNT,
+            "Initiator should receive wrapped tokens"
+        );
+
+        // Step 2: Supply collateral directly to Morpho (not through Bundler3)
+        vm.prank(allowedUser1);
+        morpho.supplyCollateral(marketParams, TEST_AMOUNT, allowedUser1, hex"");
+
+        // Verify collateral was supplied
+        assertEq(
+            morpho.collateral(marketId, allowedUser1), collateralBefore + TEST_AMOUNT, "Collateral should increase"
+        );
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore,
+            "Permissioned tokens should be supplied to Morpho"
+        );
+    }
+
+    /**
+     * @notice Test: Multiple wrapping operations
+     */
+    function test_MultipleWrappingOperations_Ok() public {
+        uint256 amount1 = 50 ether;
+        uint256 amount2 = 75 ether;
+
+        // Ensure user has underlying tokens and approves Bundler3 for transferFrom
+        underlyingERC20.setBalance(allowedUser1, amount1 + amount2);
+        vm.startPrank(allowedUser1);
+        underlyingERC20.approve(address(bundler3), amount1 + amount2);
+        vm.stopPrank();
+
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
+
+        // First wrapping operation
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), amount1
+            )
+        );
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), amount1
+            )
+        );
+
+        // Second wrapping operation
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), amount2
+            )
+        );
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), amount2
+            )
+        );
+
+        vm.prank(allowedUser1);
+        bundler3.multicall(bundle);
+
+        // Verify total wrapped tokens
+        assertEq(
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore + amount1 + amount2,
+            "Should have wrapped both amounts"
+        );
+    }
+
+    /**
+     * @notice Test: Verify that Bundler3 does NOT need to be whitelisted
+     * @dev This test demonstrates that only ERC20WrapperAdapter needs whitelisting, not Bundler3
+     */
+    function test_Bundler3NotWhitelisted_StillWorks() public {
+        // Ensure user has underlying tokens and approves Bundler3 for transferFrom
+        underlyingERC20.setBalance(allowedUser1, TEST_AMOUNT);
+        vm.startPrank(allowedUser1);
+        underlyingERC20.approve(address(bundler3), TEST_AMOUNT);
+        vm.stopPrank();
+
+        // Verify Bundler3 is NOT whitelisted
+        assertFalse(permissionedERC20.isAllowed(address(bundler3)), "Bundler3 should NOT be whitelisted");
+
+        // Verify ERC20WrapperAdapter IS whitelisted (for wrapping operations)
+        assertTrue(
+            permissionedERC20.isAllowed(address(erc20WrapperAdapter)), "ERC20WrapperAdapter should be whitelisted"
+        );
+
+        // Wrapping should still work using direct calls (requires approving Bundler3)
+        bundle.push(
+            BundlerHelpers.createERC20TransferFromCall(
+                address(underlyingERC20), allowedUser1, address(erc20WrapperAdapter), TEST_AMOUNT
+            )
+        );
+        bundle.push(
+            BundlerHelpers.createERC20WrapperDepositForCall(
+                address(erc20WrapperAdapter), address(permissionedERC20), TEST_AMOUNT
+            )
+        );
+
+        uint256 wrappedBalanceBefore = permissionedERC20.balanceOf(allowedUser1);
 
         vm.prank(allowedUser1);
         bundler3.multicall(bundle);
 
         assertEq(
-            morpho.collateral(marketId, allowedUser1), collateralBefore + collateralAmount, "Collateral should increase"
+            permissionedERC20.balanceOf(allowedUser1),
+            wrappedBalanceBefore + TEST_AMOUNT,
+            "Wrapping should work even without Bundler3 whitelisted"
         );
-    }
-
-    /**
-     * @notice Test: Atomic approve (max) and supply collateral through Bundler3
-     */
-    function test_AtomicApproveMaxAndSupplyCollateral_Ok() public {
-        uint256 collateralAmount = 150 ether;
-        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
-
-        // Step 1: Approve adapter with max amount
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), type(uint256).max)
-        );
-        // Step 2: Transfer collateral to adapter
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount
-            )
-        );
-        // Step 3: Supply collateral to Morpho
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount, allowedUser1, hex""
-            )
-        );
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        assertEq(
-            morpho.collateral(marketId, allowedUser1), collateralBefore + collateralAmount, "Collateral should increase"
-        );
-        // Verify approval is set (should be max, but exact value may vary due to token implementation)
-        assertGt(
-            underlyingERC20.allowance(allowedUser1, address(generalAdapter1)),
-            collateralAmount,
-            "Approval should be sufficient for the operation"
-        );
-    }
-
-    /**
-     * @notice Test: Multiple approve and supply collateral operations in one bundle
-     */
-    function test_MultipleApproveAndSupplyCollateral_Ok() public {
-        uint256 collateralAmount1 = 50 ether;
-        uint256 collateralAmount2 = 75 ether;
-        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
-
-        // First operation: Approve and supply
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), collateralAmount1)
-        );
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount1
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount1, allowedUser1, hex""
-            )
-        );
-
-        // Second operation: Approve more and supply more
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), collateralAmount2)
-        );
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount2
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount2, allowedUser1, hex""
-            )
-        );
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        assertEq(
-            morpho.collateral(marketId, allowedUser1),
-            collateralBefore + collateralAmount1 + collateralAmount2,
-            "Collateral should increase by both amounts"
-        );
-    }
-
-    /**
-     * @notice Test: Morpho supply collateral callback with reenter
-     */
-    function test_MorphoSupplyCollateralCallback_WithReenter_Ok() public {
-        // Prepare callback bundle
-        callbackBundle.push(
-            BundlerHelpers.createERC20TransferCall(
-                address(generalAdapter1), address(underlyingERC20), allowedUser1, 5 ether
-            )
-        );
-
-        // Step 1: Transfer collateral to adapter
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), TEST_AMOUNT
-            )
-        );
-        // Step 2: Supply collateral with callback
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, TEST_AMOUNT, allowedUser1, abi.encode(callbackBundle)
-            )
-        );
-
-        // Fund adapter for callback
-        underlyingERC20.setBalance(address(generalAdapter1), 5 ether);
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        assertEq(morpho.collateral(marketId, allowedUser1), TEST_AMOUNT, "Should have collateral");
-    }
-
-    /**
-     * @notice Test: Complete flow - approve, supply collateral, approve more, supply more collateral
-     */
-    function test_CompleteFlow_ApproveAndSupplyCollateral_Ok() public {
-        uint256 collateralAmount1 = 100 ether;
-        uint256 collateralAmount2 = 200 ether;
-        uint256 collateralBefore = morpho.collateral(marketId, allowedUser1);
-
-        // Phase 1: Approve and supply first batch of collateral
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), collateralAmount1)
-        );
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount1
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount1, allowedUser1, hex""
-            )
-        );
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        // Phase 2: Approve more and supply more collateral
-        delete bundle;
-        bundle.push(
-            BundlerHelpers.createApproveCall(address(underlyingERC20), address(generalAdapter1), collateralAmount2)
-        );
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), collateralAmount2
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, collateralAmount2, allowedUser1, hex""
-            )
-        );
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        // Verify final state
-        assertEq(
-            morpho.collateral(marketId, allowedUser1),
-            collateralBefore + collateralAmount1 + collateralAmount2,
-            "Should have total collateral from both operations"
-        );
-    }
-
-    /**
-     * @notice Test: Multiple users operations in sequence
-     */
-    function test_MultipleUsers_SequentialOperations_Ok() public {
-        // User1 operations
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), TEST_AMOUNT
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, TEST_AMOUNT, allowedUser1, hex""
-            )
-        );
-
-        vm.prank(allowedUser1);
-        bundler3.multicall(bundle);
-
-        // User2 operations
-        delete bundle;
-        bundle.push(
-            BundlerHelpers.createERC20TransferFromCall(
-                address(generalAdapter1), address(underlyingERC20), address(generalAdapter1), TEST_AMOUNT
-            )
-        );
-        bundle.push(
-            BundlerHelpers.createMorphoSupplyCollateralCall(
-                address(generalAdapter1), marketParams, TEST_AMOUNT, allowedUser2, hex""
-            )
-        );
-
-        vm.prank(allowedUser2);
-        bundler3.multicall(bundle);
-
-        assertEq(morpho.collateral(marketId, allowedUser1), TEST_AMOUNT, "User1 should have collateral");
-        assertEq(morpho.collateral(marketId, allowedUser2), TEST_AMOUNT, "User2 should have collateral");
     }
 }
-
